@@ -171,7 +171,7 @@ def main():
     with open(f"{out_dir}/feature_names.json", "w") as f:
         json.dump(features, f, indent=2)
 
-    print("\n✅ Dataset ready!")
+    print("\n Dataset ready!")
     print("  ➤ Train:", X_train.shape, y_train.shape)
     print("  ➤ Test :", X_test.shape, y_test.shape)
 
