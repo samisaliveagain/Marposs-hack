@@ -57,8 +57,8 @@ def build_dataset(windows, sr, label):
 # --- Step 3: Main Processing ---
 def main():
     # File paths
-    chatter_path = "data/chatter.wav"
-    nonchatter_path = "data/non_chatter.wav"
+    chatter_path = "data/chatter.wav"    # wav file with chatter
+    nonchatter_path = "data/non_chatter.wav"  # wav file without chatter
 
     # Segment audio
     chatter_windows, sr1 = segment_audio(chatter_path)
@@ -76,7 +76,15 @@ def main():
     y = np.concatenate([y_chatter, y_nonchatter])
 
     print(f"Final dataset: X shape = {X.shape}, y shape = {y.shape}")
-    np.savez("chatter_dataset.npz", X=X, y=y)
+    
+    # Create output directory if it doesn't exist
+    output_dir = "processed"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save to folder
+    output_path = os.path.join(output_dir, "chatter_dataset.npz")
+    np.savez(output_path, X=X, y=y)
+    print(f"Saved dataset to {output_path}")
 
 if __name__ == "__main__":
     main()

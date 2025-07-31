@@ -7,10 +7,12 @@ from glob import glob
 from collections import defaultdict
 from sklearn.model_selection import train_test_split
 
+# Extract ID from filename using regex pattern "_ID###"
 def extract_id_from_filename(filename):
     match = re.search(r'_ID(\d+)', filename)
     return int(match.group(1)) if match else -1
 
+# Load CNC signal data from folder, return tensor, mask, labels, and feature names
 def load_cnc_folder(folder_path, label):
     all_tensors = []
     all_masks = []
@@ -21,6 +23,7 @@ def load_cnc_folder(folder_path, label):
     if not file_paths:
         raise ValueError("No CSV files found.")
 
+    # Group files by their pass ID
     id_groups = defaultdict(list)
     for fp in file_paths:
         id_ = extract_id_from_filename(fp)
@@ -30,6 +33,7 @@ def load_cnc_folder(folder_path, label):
         signal_data = {}
         run_names_set = None
 
+        # Load each CSV and build the common run set across all signals
         for path in sorted(group_files):
             signal = os.path.basename(path).split('_')[2]
             df = pd.read_csv(path, sep=';', engine='python')
@@ -47,6 +51,8 @@ def load_cnc_folder(folder_path, label):
         num_features = len(signal_data)
         max_time = 0
         feature_run_data = {}
+
+        # Organize run data per signal
         for sig, df in signal_data.items():
             run_matrices = []
             for run in common_runs:
@@ -56,6 +62,7 @@ def load_cnc_folder(folder_path, label):
                 max_time = max(max_time, np.count_nonzero(~np.isnan(run_arr)))
             feature_run_data[sig] = run_matrices
 
+        # Create tensor (runs × features+1 × time)
         tensor = np.zeros((num_runs, num_features + 1, max_time), dtype=np.float32)
         mask = np.zeros((num_runs, max_time), dtype=np.uint8)
 
@@ -68,8 +75,9 @@ def load_cnc_folder(folder_path, label):
                 valid_len = np.count_nonzero(~np.isnan(run_arr))
                 tensor[r_idx, f_idx, :valid_len] = run_arr[:valid_len]
                 if f_idx == 0:
-                    mask[r_idx, :valid_len] = 1
+                    mask[r_idx, :valid_len] = 1  # Only mark mask on one feature
 
+        # Add PassID as final channel
         tensor[:, -1, :] = pass_id
         label_arr = np.full((num_runs,), label, dtype=np.uint8)
 
@@ -77,6 +85,7 @@ def load_cnc_folder(folder_path, label):
         all_masks.append(mask)
         all_labels.append(label_arr)
 
+    # Pad all tensors to same max_time
     max_time = max(t.shape[2] for t in all_tensors)
     padded_tensors = []
     padded_masks = []
@@ -88,49 +97,59 @@ def load_cnc_folder(folder_path, label):
         padded_tensors.append(t)
         padded_masks.append(m)
 
+    # Combine all data
     full_tensor = np.concatenate(padded_tensors, axis=0)
     full_mask = np.concatenate(padded_masks, axis=0)
     full_labels = np.concatenate(all_labels, axis=0)
     return full_tensor, full_mask, full_labels, feature_names + ["PassID"]
 
+# Normalize tensor using mask-aware mean/std normalization
 def normalize_tensor(tensor, mask):
     signal_data = tensor[:, :-1, :]
     pass_id_channel = tensor[:, -1:, :]
     N, F, T = signal_data.shape
 
+    # Flatten and apply mask
     flat = signal_data.transpose(1, 0, 2).reshape(F, -1)
     flat_mask = mask.reshape(1, -1).repeat(F, axis=0)
     flat_masked = np.where(flat_mask == 1, flat, np.nan)
 
+    # Compute per-feature mean and std
     means = np.nanmean(flat_masked, axis=1)
     stds = np.nanstd(flat_masked, axis=1)
-    stds[stds == 0] = 1e-6
+    stds[stds == 0] = 1e-6  # Avoid divide-by-zero
 
+    # Normalize data
     norm_data = np.zeros_like(signal_data)
     for f in range(F):
         norm_data[:, f, :] = (signal_data[:, f, :] - means[f]) / stds[f]
 
     norm_tensor = np.concatenate([norm_data, pass_id_channel], axis=1)
-    norm_tensor = np.nan_to_num(norm_tensor, nan=0.0)  # Final NaN safeguard
+    norm_tensor = np.nan_to_num(norm_tensor, nan=0.0)
 
+    # Store normalization factors
     norm_factors = {f"SIG{i+1}": {"mean": float(means[i]), "std": float(stds[i])} for i in range(F)}
 
-    print("\nNormalization factors:")
+    # Print summary
+    print("Normalization factors:")
     for i, (mean, std) in enumerate(zip(means, stds)):
         print(f"  SIG{i+1}: mean = {mean:.4f}, std = {std:.4f}")
 
     return norm_tensor, norm_factors
 
+# Main data preparation routine
 def main():
-    tool = "TN26"  # change as needed
-    io_path = f"IO/{tool}"
-    nio_path = f"NIO/{tool}"
+    tool = "TN23"  # Change tool name as needed
+    io_path = f"../../M8/IO/{tool}"
+    nio_path = f"../../M8/NIO/{tool}"
 
-    print(f"🔄 Preparing dataset for tool: {tool}")
-    print(f"  ➤ Loading from: {io_path} and {nio_path}")
+    print(f"Preparing dataset for tool: {tool}")
+    print(f"  Loading from: {io_path} and {nio_path}")
+    
     pos_tensor, pos_mask, pos_labels, features = load_cnc_folder(io_path, label=1)
     neg_tensor, neg_mask, neg_labels, _ = load_cnc_folder(nio_path, label=0)
 
+    # Align lengths (in case positive/negative differ slightly in time steps)
     max_time = max(pos_tensor.shape[2], neg_tensor.shape[2])
     def pad(t, m):
         pad_len = max_time - t.shape[2]
@@ -142,23 +161,23 @@ def main():
     pos_tensor, pos_mask = pad(pos_tensor, pos_mask)
     neg_tensor, neg_mask = pad(neg_tensor, neg_mask)
 
+    # Combine tensors and masks
     full_tensor = np.concatenate([pos_tensor, neg_tensor], axis=0)
     full_mask = np.concatenate([pos_mask, neg_mask], axis=0)
     y_labels = np.concatenate([pos_labels, neg_labels], axis=0)
 
+    # Normalize and check
     norm_tensor, norm_factors = normalize_tensor(full_tensor, full_mask)
     assert not np.isnan(norm_tensor).any(), "NaNs found after normalization!"
 
-    X = norm_tensor
-    y = y_labels
+    # Final split
+    X_train, X_test, y_train, y_test = train_test_split(norm_tensor, y_labels, stratify=y_labels, test_size=0.50, random_state=42)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.5, random_state=42)
-
-    # Final check & cleanup
     X_train = np.nan_to_num(X_train, nan=0.0)
     X_test = np.nan_to_num(X_test, nan=0.0)
-    assert not np.isnan(X_train).any(), "X_train still has NaNs"
+    assert not np.isnan(X_train).any(), "X_train contains NaNs"
 
+    # Save output files
     out_dir = f"split_cnc_data/{tool}"
     os.makedirs(out_dir, exist_ok=True)
     np.save(f"{out_dir}/X_train.npy", X_train)
@@ -171,9 +190,10 @@ def main():
     with open(f"{out_dir}/feature_names.json", "w") as f:
         json.dump(features, f, indent=2)
 
-    print("\n Dataset ready!")
-    print("  ➤ Train:", X_train.shape, y_train.shape)
-    print("  ➤ Test :", X_test.shape, y_test.shape)
+    # Final summary
+    print("Dataset preparation complete.")
+    print(f"  Train set: {X_train.shape}, Labels: {y_train.shape}")
+    print(f"  Test set : {X_test.shape}, Labels: {y_test.shape}")
 
 if __name__ == "__main__":
     main()

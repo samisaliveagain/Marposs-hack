@@ -25,7 +25,7 @@ def print_status(pred):
     else:
         print("\033[92m🟢 No Chatter\033[0m")
 
-print("🔊 Starting real-time chatter detection (Press Ctrl+C to stop)...")
+print("Starting real-time chatter detection (Press Ctrl+C to stop)...")
 
 try:
     while True:
